@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Lanterns</title>
+<meta name="description" content="Tap the lanterns as they rise. A small, warm game.">
+<style>
+  html,body{margin:0;height:100%;background:#0b1026;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  canvas{display:block;width:100vw;height:100vh}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .card{pointer-events:auto;background:rgba(10,14,40,.82);backdrop-filter:blur(10px);color:#f3e9d2;border-radius:22px;padding:28px 26px;max-width:340px;width:86vw;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5);border:1px solid rgba(255,220,160,.15)}
+  h1{font-weight:600;letter-spacing:.08em;margin:0 0 6px;font-size:28px}
+  p{margin:6px 0 18px;opacity:.8;line-height:1.4;font-size:15px}
+  .modes{display:grid;gap:10px}
+  button{pointer-events:auto;font:inherit;font-size:16px;padding:14px 16px;border-radius:14px;border:1px solid rgba(255,220,160,.25);background:rgba(255,200,120,.10);color:#ffe9c4;cursor:pointer;transition:transform .08s,background .2s}
+  button:active{transform:scale(.97)}
+  button.primary{background:linear-gradient(180deg,#ffb457,#e8843a);color:#2a1400;border:none;font-weight:600}
+  .sub{font-size:12px;opacity:.55;display:block;margin-top:3px}
+  .faces{display:flex;justify-content:space-between;margin:14px 0 6px}
+  .faces button{font-size:28px;padding:10px 12px;border-radius:50%}
+  #hud{position:fixed;top:max(14px,env(safe-area-inset-top));left:0;right:0;text-align:center;color:#ffe9c4;font-size:22px;letter-spacing:.1em;opacity:.9;pointer-events:none;transition:opacity 2s,transform 2s}
+  .hidden{display:none!important}
+  a{color:#ffd28a}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="ui">
+  <div class="card" id="start">
+    <h1>LANTERNS</h1>
+    <p>Tap the lanterns as they rise. Don't let them drift away.</p>
+    <div class="modes">
+      <button class="primary" data-mode="bed">Before bed<span class="sub">a slow, warm one</span></button>
+      <button data-mode="slump">Afternoon slump<span class="sub">wake me up a little</span></button>
+      <button data-mode="calm">Calming down<span class="sub">after something stressful</span></button>
+      <button data-mode="wait">Waiting room<span class="sub">I might get called any second</span></button>
+    </div>
+  </div>
+  <div class="card hidden" id="end">
+    <h1 id="endTitle">All lit.</h1>
+    <p id="endText"></p>
+    <p style="margin-bottom:4px">How do you feel right now?</p>
+    <div class="faces">
+      <button data-f="1">😩</button><button data-f="2">😕</button><button data-f="3">😐</button><button data-f="4">🙂</button><button data-f="5">😌</button>
+    </div>
+    <button id="again" style="margin-top:12px">Play again</button>
+  </div>
+</div>
+<script>
+// Lanterns — a small warm game. Built 2026-09-13 by Claude for the household studio.
+// Mode "bed" is the tuned one: over ~8 minutes the spawn rate and drift slow, the palette warms from night-blue
+// to ember-red, chimes fall in pitch, and the score quietly fades. The other three modes play the base game with
+// light tuning; they are next week's work. Nothing leaves the device: session data is localStorage only.
+(() => {
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud'), ui = document.getElementById('ui');
+const startCard = document.getElementById('start'), endCard = document.getElementById('end');
+let W=0,H=0,DPR=1;
+function resize(){DPR=Math.min(window.devicePixelRatio||1,2);W=innerWidth;H=innerHeight;canvas.width=W*DPR;canvas.height=H*DPR;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);}
+addEventListener('resize',resize);resize();
+
+// ---------- modes: the vitamin lives here, off the label ----------
+const MODES = {
+  bed:   {len:480, spawn0:1.15, spawn1:0.35, speed0:1.0, speed1:0.42, warm:true,  scoreFade:true,  pitch0:660, pitch1:330, endTitle:'All lit.',      endText:'The lanterns are up. That\'s the whole sky for tonight.'},
+  slump: {len:180, spawn0:0.9,  spawn1:1.6,  speed0:0.9, speed1:1.35, warm:false, scoreFade:false, pitch0:520, pitch1:780, endTitle:'Up you get.',   endText:'Three minutes. That\'s enough.'},
+  calm:  {len:300, spawn0:0.8,  spawn1:0.5,  speed0:0.7, speed1:0.5,  warm:true,  scoreFade:true,  pitch0:600, pitch1:420, endTitle:'Steadier.',    endText:'The lanterns rise at about the pace of a slow breath. So did you.'},
+  wait:  {len:9999,spawn0:1.0,  spawn1:1.0,  speed0:1.0, speed1:1.0,  warm:false, scoreFade:false, pitch0:600, pitch1:600, endTitle:'Called?',      endText:'Nothing was lost. Come back any time.'},
+};
+let mode=null, cfg=null, t0=0, elapsed=0, running=false, score=0, lit=0, missed=0, streak=0, best=0;
+let lanterns=[], sparks=[], stars=[], spawnAcc=0, lastT=0, taps=0;
+
+// ---------- audio: soft chimes, pitch drifts with the mode ----------
+let AC=null;
+function ensureAudio(){ if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ AC=null; } } if(AC&&AC.state==='suspended') AC.resume(); }
+function chime(freq, gain=0.08, dur=0.9){ if(!AC) return; const o=AC.createOscillator(), g=AC.createGain(), o2=AC.createOscillator(), g2=AC.createGain();
+  o.type='sine'; o.frequency.value=freq; o2.type='sine'; o2.frequency.value=freq*2.01; g2.gain.value=0.25;
+  const t=AC.currentTime; g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+0.01); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g); o2.connect(g2); g2.connect(g); g.connect(AC.destination); o.start(t); o2.start(t); o.stop(t+dur); o2.stop(t+dur); }
+
+// ---------- helpers ----------
+const lerp=(a,b,k)=>a+(b-a)*k, clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function progress(){ return cfg.len>=9999?0:clamp(elapsed/cfg.len,0,1); }
+function palette(p){ // night blue -> amber -> deep ember (bed/calm); static otherwise
+  if(!cfg.warm) return {top:'#0b1026', bot:'#1a1f4a', glow:'255,196,110'};
+  const k=p; // 0..1
+  const top = k<0.5 ? mix('#0b1026','#2a1630',k*2) : mix('#2a1630','#1a0806',(k-0.5)*2);
+  const bot = k<0.5 ? mix('#1a1f4a','#4a2416',k*2) : mix('#4a2416','#2a0a06',(k-0.5)*2);
+  const glow = k<0.5 ? '255,196,110' : '255,150,80';
+  return {top,bot,glow};
+}
+function mix(a,b,k){ const pa=hex(a),pb=hex(b); return `rgb(${Math.round(lerp(pa[0],pb[0],k))},${Math.round(lerp(pa[1],pb[1],k))},${Math.round(lerp(pa[2],pb[2],k))})`; }
+function hex(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]; }
+
+// ---------- world ----------
+function makeStars(){ stars=[]; for(let i=0;i<90;i++) stars.push({x:Math.random()*W,y:Math.random()*H*0.8,r:Math.random()*1.4+0.3,tw:Math.random()*6.28}); }
+function spawn(){ const r = 22+Math.random()*16; const x = r+Math.random()*(W-2*r);
+  const sp = lerp(cfg.speed0,cfg.speed1,progress()); const vy = -(28+Math.random()*26)*sp; const sway=(Math.random()*0.8+0.4)*(Math.random()<0.5?-1:1);
+  lanterns.push({x,y:H+r+10,r,vy,sway,ph:Math.random()*6.28,lit:false,age:0,born:elapsed,hue:Math.random()<0.15?'blue':'warm'}); }
+function light(l){ l.lit=true; lit++; streak++; best=Math.max(best,streak); const p=progress(); score+= 10 + Math.min(streak,10)*2;
+  const pitch = lerp(cfg.pitch0,cfg.pitch1,p) * (1 + (streak%4)*0.06); chime(pitch, cfg.warm? lerp(0.08,0.035,p):0.08, cfg.warm?lerp(0.9,1.6,p):0.7);
+  for(let i=0;i<14;i++) sparks.push({x:l.x,y:l.y,vx:(Math.random()-0.5)*90,vy:(Math.random()-0.9)*90,life:0.6+Math.random()*0.5,age:0,r:1+Math.random()*2.5}); }
+
+function tap(px,py){ if(!running) return; ensureAudio(); taps++;
+  let hit=null, hd=1e9; for(const l of lanterns){ if(l.lit) continue; const d=Math.hypot(l.x-px,l.y-py); if(d<l.r*1.35+18 && d<hd){hd=d;hit=l;} }
+  if(hit) light(hit); else { streak=0; }
+}
+canvas.addEventListener('pointerdown', e=>{ tap(e.clientX,e.clientY); });
+
+// ---------- loop ----------
+function step(ts){ if(!running) return; if(!lastT) lastT=ts; const dt=Math.min(0.05,(ts-lastT)/1000); lastT=ts; elapsed=(ts-t0)/1000;
+  const p=progress(); const spawnRate=lerp(cfg.spawn0,cfg.spawn1,p); spawnAcc+=dt*spawnRate; while(spawnAcc>1){spawnAcc-=1; spawn();}
+  const sp=lerp(cfg.speed0,cfg.speed1,p);
+  for(const l of lanterns){ l.age+=dt; l.ph+=dt*1.2; const v = l.lit? l.vy*1.6*sp : l.vy*sp; l.y += v*dt; l.x += Math.sin(l.ph)*l.sway*14*dt; }
+  // misses: unlit lanterns that leave the top
+  for(const l of lanterns){ if(!l.lit && l.y< -l.r-20 && !l.gone){ l.gone=true; missed++; streak=0; } }
+  lanterns=lanterns.filter(l=>l.y>-l.r-40);
+  for(const s of sparks){ s.age+=dt; s.x+=s.vx*dt; s.y+=s.vy*dt; s.vy+=60*dt; }
+  sparks=sparks.filter(s=>s.age<s.life);
+  draw(p);
+  if(cfg.len<9999 && elapsed>=cfg.len && lanterns.every(l=>l.lit||l.y<H*0.5)) { finish(); return; }
+  hud.textContent = cfg.len>=9999 ? `${lit}` : `${score}`;
+  if(cfg.scoreFade){ const f = p<0.45?1: clamp(1-(p-0.45)/0.35,0,1); hud.style.opacity=(0.9*f).toFixed(2); hud.style.transform=`scale(${lerp(1,0.7,1-f)})`; }
+  requestAnimationFrame(step);
+}
+function draw(p){ const pal=palette(p);
+  const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,pal.top); g.addColorStop(1,pal.bot); ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // stars fade as the sky warms
+  const starA = cfg.warm? lerp(0.9,0.25,p):0.9; for(const s of stars){ s.tw+=0.02; ctx.globalAlpha=starA*(0.5+0.5*Math.sin(s.tw)); ctx.fillStyle='#fff7e0'; ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,6.28); ctx.fill(); } ctx.globalAlpha=1;
+  // lanterns
+  for(const l of lanterns){ const glow=l.lit?1:0.18; const col = l.hue==='blue'? '150,200,255' : pal.glow;
+    const rg=ctx.createRadialGradient(l.x,l.y,l.r*0.2,l.x,l.y,l.r*(l.lit?3.2:1.6)); rg.addColorStop(0,`rgba(${col},${0.55*glow})`); rg.addColorStop(1,`rgba(${col},0)`); ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(l.x,l.y,l.r*(l.lit?3.2:1.6),0,6.28); ctx.fill();
+    // paper body
+    ctx.save(); ctx.translate(l.x,l.y); ctx.rotate(Math.sin(l.ph)*0.08);
+    ctx.fillStyle = l.lit? `rgba(${col},0.95)` : 'rgba(120,110,120,0.55)'; roundRect(-l.r*0.7,-l.r,l.r*1.4,l.r*2,l.r*0.5); ctx.fill();
+    ctx.strokeStyle='rgba(40,20,10,0.35)'; ctx.lineWidth=1.2; for(let i=-2;i<=2;i++){ ctx.beginPath(); ctx.moveTo(-l.r*0.7,i*l.r*0.4); ctx.lineTo(l.r*0.7,i*l.r*0.4); ctx.stroke(); }
+    ctx.fillStyle='rgba(40,20,10,0.8)'; ctx.fillRect(-l.r*0.35,-l.r-4,l.r*0.7,4); ctx.fillRect(-l.r*0.35,l.r,l.r*0.7,4);
+    if(l.lit){ ctx.fillStyle='rgba(255,255,230,0.9)'; ctx.beginPath(); ctx.arc(0,l.r*0.15,l.r*0.22,0,6.28); ctx.fill(); }
+    ctx.restore(); }
+  for(const s of sparks){ ctx.globalAlpha=1-s.age/s.life; ctx.fillStyle=`rgb(${pal.glow})`; ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,6.28); ctx.fill(); } ctx.globalAlpha=1;
+  // a soft vignette that deepens as the mode warms
+  if(cfg.warm){ const v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.3,W/2,H/2,Math.max(W,H)*0.75); v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,`rgba(10,3,0,${0.15+0.45*p})`); ctx.fillStyle=v; ctx.fillRect(0,0,W,H); }
+}
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+// ---------- session ----------
+function start(m){ mode=m; cfg=MODES[m]; ensureAudio(); makeStars(); lanterns=[];sparks=[];score=0;lit=0;missed=0;streak=0;best=0;taps=0;spawnAcc=0.9;lastT=0; t0=performance.now(); elapsed=0; running=true;
+  startCard.classList.add('hidden'); endCard.classList.add('hidden'); hud.style.opacity=0.9; hud.style.transform='scale(1)';
+  if(window.CrazyGames&&CrazyGames.SDK&&CrazyGames.SDK.game){ try{CrazyGames.SDK.game.gameplayStart();}catch(e){} }
+  requestAnimationFrame(step); }
+function finish(){ running=false; if(window.CrazyGames&&CrazyGames.SDK&&CrazyGames.SDK.game){ try{CrazyGames.SDK.game.gameplayStop();}catch(e){} }
+  document.getElementById('endTitle').textContent=cfg.endTitle; document.getElementById('endText').textContent=cfg.endText + (cfg.scoreFade? '' : ` Lit ${lit}, best streak ${best}.`);
+  hud.style.opacity=0; endCard.classList.remove('hidden'); }
+function record(feel){ // the measurement: post-session state, one tap, stays on the device
+  try{ const key='lanterns.sessions'; const arr=JSON.parse(localStorage.getItem(key)||'[]'); arr.push({t:Date.now(),mode,len:Math.round(elapsed),lit,missed,best,taps,feel}); localStorage.setItem(key,JSON.stringify(arr.slice(-200))); }catch(e){}
+}
+document.querySelectorAll('#start button').forEach(b=>b.addEventListener('click',()=>start(b.dataset.mode)));
+document.querySelectorAll('.faces button').forEach(b=>b.addEventListener('click',()=>{ record(+b.dataset.f); b.style.transform='scale(1.25)'; setTimeout(()=>{ endCard.classList.add('hidden'); startCard.classList.remove('hidden'); },500); }));
+document.getElementById('again').addEventListener('click',()=>{ endCard.classList.add('hidden'); startCard.classList.remove('hidden'); });
+// "waiting room": leaving is free — pause without penalty, resume where you were
+document.addEventListener('visibilitychange',()=>{ if(document.hidden && running){ running=false; hud.textContent+=' ·'; } else if(!document.hidden && !running && mode && !endCard.classList.contains('hidden')===false && startCard.classList.contains('hidden')){ lastT=0; t0=performance.now()-elapsed*1000; running=true; requestAnimationFrame(step); } });
+// idle sky before the first tap
+(function idle(){ if(running) return; cfg=cfg||MODES.bed; if(!stars.length) makeStars(); draw(0); requestAnimationFrame(idle); })();
+})();
+</script>
+</body>
+</html>
