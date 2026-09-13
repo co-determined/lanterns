@@ -244,7 +244,7 @@ function update(dt){ const p=progress(); spawnAcc+=dt;
   if(shake>0) shake=Math.max(0,shake-dt*14);
   if(ghost.on){ ghost.t+=dt; if(ghost.t>4.2) ghost.on=false; }
   else if(ghost.want){ const L=lanterns.find(L=>!L.lit&&!L.gone&&!L.settled&&L.y<H*0.72); if(L){ ghost={on:true,t:0,x:L.x,y:L.y-H*0.06,want:false}; store.set('lanterns.seen','1'); } }
-  if(titleEl.parentNode && !titleFading && (lit>0 || elapsed>9)){ titleFading=true; titleEl.style.opacity=0; setTimeout(()=>titleEl.remove(),1700); }
+  if(!QA.title && titleEl.parentNode && !titleFading && (lit>0 || elapsed>9)){ titleFading=true; titleEl.style.opacity=0; setTimeout(()=>titleEl.remove(),1700); }
   audio.tuneDrone(p);
   // ending: timed moods end once the timer is up and the last unlit lanterns are gone or lit
   if(cfg.len && elapsed>=cfg.len && !ended){ ended=true; }
@@ -309,7 +309,7 @@ function startRound(){ cancelAnimationFrame(raf); cancelAnimationFrame(idleRaf);
   t0=performance.now(); elapsed=0; running=true; paused=false;
   missesEl.innerHTML=''; if(cfg.fail){ for(let i=0;i<cfg.fail;i++) missesEl.appendChild(document.createElement('i')); }
   hud.style.opacity=0.92; hud.style.transform='none'; endCard.classList.add('hidden'); picker.classList.add('hidden'); CG.banner(false);
-  if(cfg.feel) say(`${cfg.label} · ends on its own in ${Math.round(cfg.len/60)} min · tap the pill to change`, 3200);
+  if(cfg.feel && !QA.title) say(`${cfg.label} · ends on its own in ${Math.round(cfg.len/60)} min · tap the pill to change`, 3200);
   CG.gameplayStart(); raf=requestAnimationFrame(step); }
 function finish(){ running=false; paused=false; stroke=null; cancelAnimationFrame(raf); rounds++; CG.gameplayStop(); const newBest = score>best; if(newBest){ best=score; store.set('lanterns.best',best); }
   if(!happy && newBest && rounds>1){ happy=true; CG.happytime(); }
