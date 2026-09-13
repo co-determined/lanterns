@@ -58,18 +58,36 @@ const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
 const hud = document.getElementById('hud'), ui = document.getElementById('ui');
 const startCard = document.getElementById('start'), endCard = document.getElementById('end');
 let W=0,H=0,DPR=1;
-function resize(){DPR=Math.min(window.devicePixelRatio||1,2);W=innerWidth;H=innerHeight;canvas.width=W*DPR;canvas.height=H*DPR;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);}
-addEventListener('resize',resize);resize();
+// Size the backing store to the element's REAL laid-out size, and re-check every frame. Mobile browsers fire
+// resize inconsistently (URL bar, rotation, zoom), and a stale W/H puts the whole game off-screen.
+function resize(){
+  const r = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width  || innerWidth));
+  const h = Math.max(1, Math.round(r.height || innerHeight));
+  DPR = Math.max(1, Math.min(window.devicePixelRatio||1, 2));
+  if (w===W && h===H && canvas.width===Math.round(w*DPR)) return false;
+  W=w; H=h; canvas.width=Math.round(W*DPR); canvas.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  return true;
+}
+function syncSize(){ if(resize()) makeStars(); }
+addEventListener('resize',resize);
+addEventListener('orientationchange',()=>setTimeout(resize,120));
+if(window.ResizeObserver) new ResizeObserver(()=>resize()).observe(canvas);
+if(window.visualViewport) visualViewport.addEventListener('resize',resize);
+resize();
 
 // ---------- modes: the vitamin lives here, off the label ----------
 const MODES = {
-  bed:   {len:480, spawn0:1.15, spawn1:0.35, speed0:1.0, speed1:0.42, warm:true,  scoreFade:true,  pitch0:660, pitch1:330, endTitle:'All lit.',      endText:'The lanterns are up. That\'s the whole sky for tonight.'},
-  slump: {len:180, spawn0:0.9,  spawn1:1.6,  speed0:0.9, speed1:1.35, warm:false, scoreFade:false, pitch0:520, pitch1:780, endTitle:'Up you get.',   endText:'Three minutes. That\'s enough.'},
-  calm:  {len:300, spawn0:0.8,  spawn1:0.5,  speed0:0.7, speed1:0.5,  warm:true,  scoreFade:true,  pitch0:600, pitch1:420, endTitle:'Steadier.',    endText:'The lanterns rise at about the pace of a slow breath. So did you.'},
-  wait:  {len:9999,spawn0:1.0,  spawn1:1.0,  speed0:1.0, speed1:1.0,  warm:false, scoreFade:false, pitch0:600, pitch1:600, endTitle:'Called?',      endText:'Nothing was lost. Come back any time.'},
+  // conc0/conc1 = how many lanterns share the sky at the start / at the end. This, not spawn rate, is what the
+  // player feels: a slower rise triples dwell time, so rate-based spawning makes the "calm" late game crowded.
+  bed:   {len:480, conc0:6, conc1:3, gap0:0.5, gap1:1.6, speed0:1.0, speed1:0.58, warm:true,  scoreFade:true,  pitch0:660, pitch1:330, endTitle:'All lit.',      endText:'The lanterns are up. That\'s the whole sky for tonight.'},
+  slump: {len:180, conc0:5, conc1:8, gap0:0.5, gap1:0.28, speed0:0.9, speed1:1.35, warm:false, scoreFade:false, pitch0:520, pitch1:780, endTitle:'Up you get.',   endText:'Three minutes. That\'s enough.'},
+  calm:  {len:300, conc0:4, conc1:3, gap0:0.9, gap1:1.4, speed0:0.7, speed1:0.62, warm:true,  scoreFade:true,  pitch0:600, pitch1:420, endTitle:'Steadier.',    endText:'The lanterns rise at about the pace of a slow breath. So did you.'},
+  wait:  {len:9999,conc0:5, conc1:5, gap0:0.6, gap1:0.6, speed0:1.0, speed1:1.0,  warm:false, scoreFade:false, pitch0:600, pitch1:600, endTitle:'Called?',      endText:'Nothing was lost. Come back any time.'},
 };
 let mode=null, cfg=null, t0=0, elapsed=0, running=false, score=0, lit=0, missed=0, streak=0, best=0;
-let lanterns=[], sparks=[], stars=[], spawnAcc=0, lastT=0, taps=0;
+let lanterns=[], sparks=[], stars=[], spawnAcc=9, lastT=0, taps=0;
 
 // ---------- audio: soft chimes, pitch drifts with the mode ----------
 let AC=null;
@@ -85,9 +103,11 @@ function progress(){ return cfg.len>=9999?0:clamp(elapsed/cfg.len,0,1); }
 function palette(p){ // night blue -> amber -> deep ember (bed/calm); static otherwise
   if(!cfg.warm) return {top:'#0b1026', bot:'#1a1f4a', glow:'255,196,110'};
   const k=p; // 0..1
-  const top = k<0.5 ? mix('#0b1026','#2a1630',k*2) : mix('#2a1630','#1a0806',(k-0.5)*2);
-  const bot = k<0.5 ? mix('#1a1f4a','#4a2416',k*2) : mix('#4a2416','#2a0a06',(k-0.5)*2);
-  const glow = k<0.5 ? '255,196,110' : '255,150,80';
+  // blue night -> a real amber middle -> deep ember. The middle has to be visibly warm, or the taper just
+  // reads as "the screen got darker", which is not the same feeling at all.
+  const top = k<0.55 ? mix('#0b1026','#43213f',k/0.55) : mix('#43213f','#2a0d12',(k-0.55)/0.45);
+  const bot = k<0.55 ? mix('#1a1f4a','#8a4420',k/0.55) : mix('#8a4420','#4a1408',(k-0.55)/0.45);
+  const glow = k<0.5 ? '255,196,110' : '255,158,88';
   return {top,bot,glow};
 }
 function mix(a,b,k){ const pa=hex(a),pb=hex(b); return `rgb(${Math.round(lerp(pa[0],pb[0],k))},${Math.round(lerp(pa[1],pb[1],k))},${Math.round(lerp(pa[2],pb[2],k))})`; }
@@ -95,7 +115,7 @@ function hex(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),par
 
 // ---------- world ----------
 function makeStars(){ stars=[]; for(let i=0;i<90;i++) stars.push({x:Math.random()*W,y:Math.random()*H*0.8,r:Math.random()*1.4+0.3,tw:Math.random()*6.28}); }
-function spawn(){ const r = 22+Math.random()*16; const x = r+Math.random()*(W-2*r);
+function spawn(){ const r = 22+Math.random()*16; const x = r+Math.random()*Math.max(1,(W-2*r));
   const sp = lerp(cfg.speed0,cfg.speed1,progress()); const vy = -(28+Math.random()*26)*sp; const sway=(Math.random()*0.8+0.4)*(Math.random()<0.5?-1:1);
   lanterns.push({x,y:H+r+10,r,vy,sway,ph:Math.random()*6.28,lit:false,age:0,born:elapsed,hue:Math.random()<0.15?'blue':'warm'}); }
 function light(l){ l.lit=true; lit++; streak++; best=Math.max(best,streak); const p=progress(); score+= 10 + Math.min(streak,10)*2;
@@ -109,8 +129,13 @@ function tap(px,py){ if(!running) return; ensureAudio(); taps++;
 canvas.addEventListener('pointerdown', e=>{ tap(e.clientX,e.clientY); });
 
 // ---------- loop ----------
-function step(ts){ if(!running) return; if(!lastT) lastT=ts; const dt=Math.min(0.05,(ts-lastT)/1000); lastT=ts; elapsed=(ts-t0)/1000;
-  const p=progress(); const spawnRate=lerp(cfg.spawn0,cfg.spawn1,p); spawnAcc+=dt*spawnRate; while(spawnAcc>1){spawnAcc-=1; spawn();}
+function update(dt){
+  const p=progress();
+  // spawn to a concurrency target, never faster than the mode's minimum gap
+  spawnAcc+=dt;
+  const target=lerp(cfg.conc0,cfg.conc1,p), gap=lerp(cfg.gap0,cfg.gap1,p);
+  const aloft=lanterns.reduce((n,l)=>n+((!l.lit && l.y<H+l.r)?1:0),0);
+  if(spawnAcc>=gap && aloft<target){ spawnAcc=0; spawn(); }
   const sp=lerp(cfg.speed0,cfg.speed1,p);
   for(const l of lanterns){ l.age+=dt; l.ph+=dt*1.2; const v = l.lit? l.vy*1.6*sp : l.vy*sp; l.y += v*dt; l.x += Math.sin(l.ph)*l.sway*14*dt; }
   // misses: unlit lanterns that leave the top
@@ -118,6 +143,10 @@ function step(ts){ if(!running) return; if(!lastT) lastT=ts; const dt=Math.min(0
   lanterns=lanterns.filter(l=>l.y>-l.r-40);
   for(const s of sparks){ s.age+=dt; s.x+=s.vx*dt; s.y+=s.vy*dt; s.vy+=60*dt; }
   sparks=sparks.filter(s=>s.age<s.life);
+  return p;
+}
+function step(ts){ if(!running) return; syncSize(); if(!lastT) lastT=ts; const dt=Math.min(0.05,(ts-lastT)/1000); lastT=ts; elapsed=(ts-t0)/1000;
+  const p=update(dt);
   draw(p);
   if(cfg.len<9999 && elapsed>=cfg.len && lanterns.every(l=>l.lit||l.y<H*0.5)) { finish(); return; }
   hud.textContent = cfg.len>=9999 ? `${lit}` : `${score}`;
@@ -140,12 +169,12 @@ function draw(p){ const pal=palette(p);
     ctx.restore(); }
   for(const s of sparks){ ctx.globalAlpha=1-s.age/s.life; ctx.fillStyle=`rgb(${pal.glow})`; ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,6.28); ctx.fill(); } ctx.globalAlpha=1;
   // a soft vignette that deepens as the mode warms
-  if(cfg.warm){ const v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.3,W/2,H/2,Math.max(W,H)*0.75); v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,`rgba(10,3,0,${0.15+0.45*p})`); ctx.fillStyle=v; ctx.fillRect(0,0,W,H); }
+  if(cfg.warm){ const v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.3,W/2,H/2,Math.max(W,H)*0.75); v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,`rgba(10,3,0,${0.12+0.26*p})`); ctx.fillStyle=v; ctx.fillRect(0,0,W,H); }
 }
 function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
 // ---------- session ----------
-function start(m){ mode=m; cfg=MODES[m]; ensureAudio(); makeStars(); lanterns=[];sparks=[];score=0;lit=0;missed=0;streak=0;best=0;taps=0;spawnAcc=0.9;lastT=0; t0=performance.now(); elapsed=0; running=true;
+function start(m){ mode=m; cfg=MODES[m]; ensureAudio(); makeStars(); lanterns=[];sparks=[];score=0;lit=0;missed=0;streak=0;best=0;taps=0;spawnAcc=9;lastT=0; t0=performance.now(); elapsed=0; running=true;
   startCard.classList.add('hidden'); endCard.classList.add('hidden'); hud.style.opacity=0.9; hud.style.transform='scale(1)';
   if(window.CrazyGames&&CrazyGames.SDK&&CrazyGames.SDK.game){ try{CrazyGames.SDK.game.gameplayStart();}catch(e){} }
   requestAnimationFrame(step); }
@@ -159,9 +188,30 @@ document.querySelectorAll('#start button').forEach(b=>b.addEventListener('click'
 document.querySelectorAll('.faces button').forEach(b=>b.addEventListener('click',()=>{ record(+b.dataset.f); b.style.transform='scale(1.25)'; setTimeout(()=>{ endCard.classList.add('hidden'); startCard.classList.remove('hidden'); },500); }));
 document.getElementById('again').addEventListener('click',()=>{ endCard.classList.add('hidden'); startCard.classList.remove('hidden'); });
 // "waiting room": leaving is free — pause without penalty, resume where you were
-document.addEventListener('visibilitychange',()=>{ if(document.hidden && running){ running=false; hud.textContent+=' ·'; } else if(!document.hidden && !running && mode && !endCard.classList.contains('hidden')===false && startCard.classList.contains('hidden')){ lastT=0; t0=performance.now()-elapsed*1000; running=true; requestAnimationFrame(step); } });
+// Leaving is free: pause on hide, resume exactly where it was. No penalty, no lost lanterns.
+let paused=false;
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){ if(running){ running=false; paused=true; } }
+  else if(paused){ paused=false; lastT=0; t0=performance.now()-elapsed*1000; running=true; requestAnimationFrame(step); }
+});
+// QA hook — drives the simulation without requestAnimationFrame (background tabs throttle rAF to ~0fps).
+// Used to verify spawn/rise/light/miss logic headlessly; harmless in production.
+window.__lanterns = {
+  state: () => ({running, paused, mode, elapsed:+elapsed.toFixed(2), lanterns:lanterns.length, lit, missed, score, streak, W, H, dpr:DPR}),
+  sim: (seconds=30, fps=60) => { if(!cfg) cfg=MODES.bed; if(!mode){mode='bed';} const dt=1/fps; const n=Math.round(seconds*fps);
+    for(let i=0;i<n;i++){ elapsed+=dt; update(dt); }
+    t0 -= seconds*1000; // keep the live loop's wall-clock in step with simulated time
+    return window.__lanterns.state(); },
+  seek: (sec) => { elapsed=sec; t0=performance.now()-sec*1000; draw(progress()); return +progress().toFixed(3); },
+  sample: () => { const y=[6, Math.round(H*0.5), H-6].map(yy=>{ const d=ctx.getImageData(Math.round(W*0.5*DPR), Math.round(yy*DPR),1,1).data; return [d[0],d[1],d[2]]; }); return {p:+progress().toFixed(2), top:y[0], mid:y[1], bottom:y[2]}; },
+  tapNearest: () => { const un=lanterns.filter(l=>!l.lit); if(!un.length) return 'none'; const l=un.sort((a,b)=>a.y-b.y)[0]; light(l); return {x:Math.round(l.x),y:Math.round(l.y),lit,score,streak}; },
+  onscreen: () => lanterns.filter(l=>l.y>-l.r && l.y<H+l.r).length,
+  frame: (dt=1/60) => { const p=update(dt); draw(p); return +p.toFixed(3); },
+  render: () => { draw(progress()); return +progress().toFixed(3); },
+};
+
 // idle sky before the first tap
-(function idle(){ if(running) return; cfg=cfg||MODES.bed; if(!stars.length) makeStars(); draw(0); requestAnimationFrame(idle); })();
+(function idle(){ if(running) return; cfg=cfg||MODES.bed; syncSize(); if(!stars.length) makeStars(); draw(0); requestAnimationFrame(idle); })();
 })();
 </script>
 </body>
