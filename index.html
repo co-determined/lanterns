@@ -8,7 +8,7 @@
 <style>
   :root{--ink:#f6ead2;--gold:#ffd28a;--s:min(1vw,1vh)}
   html,body{margin:0;height:100%;background:#0b1026;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink)}
-  canvas{display:block;width:100vw;height:100vh;cursor:crosshair}
+  canvas{display:block;width:100vw;height:100vh;height:100dvh;cursor:crosshair}
   .layer{position:fixed;inset:0;pointer-events:none}
   #hud{position:fixed;top:max(10px,env(safe-area-inset-top));left:0;right:0;text-align:center;pointer-events:none;transition:opacity 2.5s,transform 2.5s}
   #score{font-size:clamp(22px,4.2vmin,46px);letter-spacing:.12em;font-weight:500;text-shadow:0 0 18px rgba(255,200,120,.35)}
@@ -40,7 +40,8 @@
   #title div{text-align:center;padding:4vmin 8vmin;border-radius:50%;background:radial-gradient(ellipse at center,rgba(6,8,24,.55) 0%,rgba(6,8,24,.25) 55%,rgba(6,8,24,0) 72%)}
   #title h1{font-size:clamp(34px,8vmin,72px);letter-spacing:.24em;margin:0;text-shadow:0 0 30px rgba(255,190,110,.45)}
   #title p{font-size:clamp(14px,2.4vmin,20px);letter-spacing:.06em;opacity:.85}
-  #cg-banner{position:fixed;left:50%;bottom:max(8px,env(safe-area-inset-bottom));transform:translateX(-50%);pointer-events:auto}
+  #cg-banner{display:none;position:fixed;left:50%;bottom:max(8px,env(safe-area-inset-bottom));transform:translateX(-50%);pointer-events:auto;width:min(728px,calc(100vw - 16px));height:90px}
+  @media (max-height:560px){#cg-banner{width:min(320px,calc(100vw - 16px));height:50px}}
   #toast{position:fixed;left:0;right:0;bottom:12%;text-align:center;font-size:clamp(14px,2.4vmin,20px);letter-spacing:.06em;opacity:0;transition:opacity .8s;pointer-events:none;text-shadow:0 0 12px rgba(0,0,0,.6)}
 </style>
 </head>
@@ -90,12 +91,15 @@ const picker=$('picker'), endCard=$('end'), titleEl=$('title');
 const QA=Object.fromEntries(new URLSearchParams(location.search));
 if(QA.seed){ let z=(+QA.seed||1)>>>0; Math.random=()=>{ z=(z+0x6D2B79F5)|0; let t=Math.imul(z^(z>>>15),1|z); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
 const lerp=(a,b,k)=>a+(b-a)*k, clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), rnd=(a,b)=>a+Math.random()*(b-a);
+const store={ get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }, set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} } };
 
 // ---------- CrazyGames SDK: optional everywhere, never blocks the game ----------
 const CG = {
-  ok:false, env:'none', lastAd:-1e9,
-  load(){ return new Promise(res=>{ if(QA.nosdk) return res(false); const s=document.createElement('script'); s.src='https://sdk.crazygames.com/crazygames-sdk-v3.js'; s.async=true; const t=setTimeout(()=>res(false),2500); s.onload=()=>{ clearTimeout(t); res(true); }; s.onerror=()=>{ clearTimeout(t); res(false); }; document.head.appendChild(s); }); },
-  async init(){ try{ const loaded=await this.load(); if(!loaded) return; const to=new Promise(r=>setTimeout(r,2500)); await Promise.race([CrazyGames.SDK.init(), to]); this.env=CrazyGames.SDK.environment; this.ok=(this.env==='crazygames'||this.env==='local'); }catch(e){ this.ok=false; } },
+  ok:false, env:'none', lastAd:0, // lastAd=0 means 'session start': the first ad can't come sooner than the spacing
+  load(){ return new Promise(res=>{ if(QA.nosdk) return res(false); const s=document.createElement('script'); s.src='https://sdk.crazygames.com/crazygames-sdk-v3.js'; s.async=true; s.onload=()=>res(true); s.onerror=()=>res(false); document.head.appendChild(s); }); },
+  // Runs in the background: the game starts without it and picks the SDK up whenever init resolves (never on disabled domains).
+  async init(){ try{ const loaded=await this.load(); if(!loaded||!window.CrazyGames||!CrazyGames.SDK) return; await CrazyGames.SDK.init(); this.env=CrazyGames.SDK.environment; this.ok=(this.env==='crazygames'||this.env==='local');
+      this.call(s=>{ s.game.loadingStart(); s.game.loadingStop(); }); this.call(s=>{ if(s.game.addSettingsChangeListener) s.game.addSettingsChangeListener(()=>audio.apply()); }); audio.apply(); if(running) this.gameplayStart(); }catch(e){ this.ok=false; } },
   call(fn){ if(!this.ok) return; try{ fn(CrazyGames.SDK); }catch(e){} },
   gameplayStart(){ this.call(s=>s.game.gameplayStart()); },
   gameplayStop(){ this.call(s=>s.game.gameplayStop()); },
@@ -108,7 +112,7 @@ const CG = {
     if(!this.ok || !cfg.ads || rounds<2 || now-this.lastAd<185){ done(); return; } // rounds is already incremented: never on the first round
     this.lastAd=now; let finished=false; const fin=()=>{ if(finished) return; finished=true; audio.duck(false); done(); };
     try{ CrazyGames.SDK.ad.requestAd('midgame',{ adStarted:()=>audio.duck(true), adFinished:fin, adError:fin }); setTimeout(fin, 45000); }catch(e){ fin(); } },
-  banner(show){ if(!this.ok) return; try{ if(show) CrazyGames.SDK.banner.requestResponsiveBanner('cg-banner'); else CrazyGames.SDK.banner.clearAllBanners(); }catch(e){} },
+  banner(show){ const el=$('cg-banner'); el.style.display=(show&&this.ok)?'block':'none'; if(!this.ok) return; try{ const p = show? CrazyGames.SDK.banner.requestResponsiveBanner('cg-banner') : CrazyGames.SDK.banner.clearAllBanners(); if(p&&p.catch) p.catch(()=>{}); }catch(e){} },
 };
 
 // ---------- moods: the vitamin lives here, off the label ----------
@@ -122,7 +126,7 @@ const MODES = {
   slump:{label:'☀️ afternoon slump',len:180, conc:[5,9], gap:[0.5,0.24], speed:[0.9,1.55], warm:0, bright:1, scoreFade:0, pitch:[520,820], fail:5, ads:1, breathe:0, feel:0, shake:1,
          endTitle:'Up you get.',         endText:"Three minutes. That's enough."},
   play: {label:'✨ just play',      len:0,   conc:[5,9], gap:[0.55,0.26],speed:[1.0,1.6],  warm:0, bright:0, scoreFade:0, pitch:[600,600], fail:5, ads:1, breathe:0, feel:0, shake:1,
-         endTitle:'The sky went dark.',  endText:'Five drifted away. The ones you lit are still up there.'},
+         endTitle:'The sky went dark.',  endText:'Five drifted away. The ones you lit stay up there for the next round.'},
 };
 function moodForHour(h){ if(h>=21||h<4) return 'bed'; if(h>=13&&h<=16) return 'slump'; return 'play'; }
 
@@ -132,8 +136,9 @@ let mode='bed', cfg=MODES.bed, running=false, paused=false, t0=0, elapsed=0, las
 let score=0, lit=0, missed=0, streak=0, bestStreak=0, taps=0, strokes=0, rounds=0, ended=false, over=false;
 let lanterns=[], sky=[], sparks=[], floats=[], stars=[], hills=[], spawnAcc=9, moon={x:0.78,y:0.18};
 let stroke=null; // {pts:[{x,y,t}], lit:[], down:true}
-let best = +(localStorage.getItem('lanterns.best')||0);
-let ghost = {on:false, t:0}; // onboarding stroke
+let titleFading=false;
+let best = +(store.get('lanterns.best')||0); let happy=false, finishTimer=0, raf=0, idleRaf=0;
+let ghost = {on:false, t:0, x:0, y:0, want:!store.get('lanterns.seen')}; // onboarding stroke: fires through the first lantern that gets reachable
 
 // ---------- sizing: read the real laid-out size, re-check every frame ----------
 function resize(){ const r=canvas.getBoundingClientRect(); const w=Math.max(1,Math.round(r.width||innerWidth)), h=Math.max(1,Math.round(r.height||innerHeight));
@@ -144,12 +149,12 @@ if(window.ResizeObserver) new ResizeObserver(()=>resize()).observe(canvas); if(w
 
 // ---------- audio: chimes, a very quiet drone, nothing sudden ----------
 const audio = {
-  AC:null, master:null, drone:null, on:(localStorage.getItem('lanterns.mute')!=='1'), ducked:false,
+  AC:null, master:null, drone:null, on:(store.get('lanterns.mute')!=='1'), ducked:false,
   ensure(){ if(!this.AC){ try{ this.AC=new (window.AudioContext||window.webkitAudioContext)(); this.master=this.AC.createGain(); this.master.connect(this.AC.destination); this.apply(); }catch(e){ this.AC=null; } } if(this.AC&&this.AC.state==='suspended') this.AC.resume(); if(this.AC&&!this.drone) this.startDrone(); },
   vol(){ return (this.on && !this.ducked && !CG.muted()) ? 1 : 0; },
   apply(){ if(!this.master) return; const t=this.AC.currentTime; this.master.gain.cancelScheduledValues(t); this.master.gain.setTargetAtTime(this.vol(), t, 0.15); },
   duck(d){ this.ducked=d; this.apply(); },
-  toggle(){ this.on=!this.on; localStorage.setItem('lanterns.mute', this.on?'0':'1'); muteBtn.textContent=this.on?'🔊':'🔇'; this.ensure(); this.apply(); },
+  toggle(){ this.on=!this.on; store.set('lanterns.mute', this.on?'0':'1'); muteBtn.textContent=this.on?'🔊':'🔇'; this.ensure(); this.apply(); },
   startDrone(){ const AC=this.AC; const g=AC.createGain(); g.gain.value=0.0; g.connect(this.master); const f=AC.createBiquadFilter(); f.type='lowpass'; f.frequency.value=420; f.connect(g);
     const o1=AC.createOscillator(), o2=AC.createOscillator(); o1.type='sine'; o2.type='triangle'; o1.frequency.value=110; o2.frequency.value=164.8; const g2=AC.createGain(); g2.gain.value=0.35; o1.connect(f); o2.connect(g2); g2.connect(f); o1.start(); o2.start();
     const lfo=AC.createOscillator(), lg=AC.createGain(); lfo.frequency.value=0.1; lg.gain.value=0.0; lfo.connect(lg); lg.connect(g.gain); lfo.start();
@@ -168,8 +173,8 @@ function comboChime(n,kind){ const p=progress(); let base=lerp(cfg.pitch[0],cfg.
   const semis=PENTA[Math.min(n-1,PENTA.length-1)]; const f=base*Math.pow(2,semis/12); const gain=cfg.warm? lerp(0.09,0.04,p):0.09; audio.chime(f, gain, cfg.warm? lerp(0.9,1.7,p):0.75); }
 
 // ---------- world ----------
-function makeStars(){ stars=[]; const n=Math.round(70+W*H/14000); for(let i=0;i<n;i++) stars.push({x:Math.random()*W,y:Math.random()*H*0.85,r:Math.random()*1.3*(S/500)+0.4,tw:Math.random()*6.28,sp:0.4+Math.random()*1.2}); }
-function makeHills(){ hills=[]; const seed=[0.3,0.7]; for(let L=0;L<2;L++){ const pts=[]; const n=24; const base=L?0.905:0.865; const amp=L?0.035:0.055; let ph=Math.random()*10;
+function makeStars(){ if(stars.length) return; const n=Math.round(70+W*H/14000); for(let i=0;i<n;i++) stars.push({u:Math.random(),v:Math.random()*0.85,r:Math.random()*1.3+0.4,tw:Math.random()*6.28,sp:0.4+Math.random()*1.2}); }
+function makeHills(){ if(hills.length) return; for(let L=0;L<2;L++){ const pts=[]; const n=24; const base=L?0.905:0.865; const amp=L?0.035:0.055; let ph=Math.random()*10;
   for(let i=0;i<=n;i++){ const x=i/n; const y=base - amp*(0.55*Math.sin(x*7.3+ph)+0.3*Math.sin(x*15.1+ph*1.7)+0.15*Math.sin(x*31+ph*3)); pts.push([x,y]); } hills.push(pts); } }
 function progress(){ if(!cfg.len) return clamp(elapsed/240,0,1); return clamp(elapsed/cfg.len,0,1); }
 function hex(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]; }
@@ -202,22 +207,22 @@ function light(L, n){ // n = how many this stroke has lit so far, including this
 }
 let shake=0;
 function miss(L){ L.gone=true; missed++; streak=0; audio.thud();
-  if(cfg.fail){ const dots=missesEl.children; const i=Math.min(missed,cfg.fail)-1; if(dots[i]) dots[i].classList.add('out'); if(missed>=cfg.fail && !over){ over=true; setTimeout(()=>finish(),350); } } }
+  if(cfg.fail){ const dots=missesEl.children; const i=Math.min(missed,cfg.fail)-1; if(dots[i]) dots[i].classList.add('out'); if(missed>=cfg.fail && !over){ over=true; clearTimeout(finishTimer); finishTimer=setTimeout(()=>{ if(running&&over) finish(); },350); } } }
 
 // ---------- strokes (the whole feel of the game is here) ----------
 function pt(e){ const r=canvas.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top,t:performance.now()}; }
-function down(e){ if(!running) return; audio.ensure(); try{ canvas.setPointerCapture&&canvas.setPointerCapture(e.pointerId); }catch(err){} stroke={pts:[pt(e)],lit:[],down:true,id:e.pointerId}; taps++; }
-function move(e){ if(!stroke||!stroke.down||e.pointerId!==stroke.id) return; const p=pt(e); const q=stroke.pts[stroke.pts.length-1]; if(Math.hypot(p.x-q.x,p.y-q.y)<2) return; stroke.pts.push(p); if(stroke.pts.length>40) stroke.pts.shift(); segHit(q,p); emberTrail(q,p); }
-function up(e){ if(!stroke||e.pointerId!==stroke.id) return; const s=stroke; s.down=false; strokes++;
+function down(e){ if(!running) return; if(stroke&&stroke.down) return; /* one stroke at a time: a second finger is ignored */ audio.ensure(); try{ canvas.setPointerCapture&&canvas.setPointerCapture(e.pointerId); }catch(err){} stroke={pts:[pt(e)],lit:[],down:true,id:e.pointerId}; taps++; }
+function move(e){ if(!running||!stroke||!stroke.down||e.pointerId!==stroke.id) return; const p=pt(e); const q=stroke.pts[stroke.pts.length-1]; if(Math.hypot(p.x-q.x,p.y-q.y)<2) return; stroke.pts.push(p); if(stroke.pts.length>40) stroke.pts.shift(); segHit(q,p); emberTrail(q,p); }
+function up(e){ if(!stroke||e.pointerId!==stroke.id) return; audio.ensure(); if(!running){ stroke=null; return; } const s=stroke; s.down=false; strokes++;
   const first=s.pts[0], last=s.pts[s.pts.length-1]; const moved=Math.hypot(last.x-first.x,last.y-first.y);
   if(s.lit.length===0 && moved<S*0.03){ // a tap: light the nearest unlit lantern
     let hit=null,hd=1e9; for(const L of lanterns){ if(L.lit||L.gone) continue; const d=Math.hypot(L.x-last.x,L.y-last.y); if(d<L.r*1.45+S*0.03 && d<hd){hd=d;hit=L;} } if(hit){ s.lit.push(hit); light(hit,1); } }
-  if(s.lit.length){ streak++; bestStreak=Math.max(bestStreak,streak); if(s.lit.length>=4) CG.happytime(); } else streak=0;
+  if(s.lit.length){ streak++; bestStreak=Math.max(bestStreak,streak); if(s.lit.length>=4 && !happy){ happy=true; CG.happytime(); } } else streak=0;
   stroke=null; }
 function segHit(a,b){ for(const L of lanterns){ if(L.lit||L.gone) continue; if(distSeg(L.x,L.y,a,b) <= L.r*1.12+S*0.022){ stroke.lit.push(L); light(L, stroke.lit.length); } } }
 function distSeg(px,py,a,b){ const vx=b.x-a.x,vy=b.y-a.y; const l2=vx*vx+vy*vy; let t=l2?((px-a.x)*vx+(py-a.y)*vy)/l2:0; t=clamp(t,0,1); return Math.hypot(px-(a.x+vx*t),py-(a.y+vy*t)); }
 function emberTrail(a,b){ const c=palette(progress()).glow; const n=1+Math.round(Math.hypot(b.x-a.x,b.y-a.y)/12); for(let i=0;i<n;i++){ const k=i/n; sparks.push({x:lerp(a.x,b.x,k),y:lerp(a.y,b.y,k),vx:rnd(-1,1)*S*0.05,vy:rnd(-0.6,0.1)*S*0.06,life:rnd(0.3,0.6),age:0,r:(0.8+Math.random()*1.6)*(S/500),c}); } }
-canvas.addEventListener('contextmenu',e=>e.preventDefault()); canvas.addEventListener('pointerdown',down); canvas.addEventListener('pointermove',move); canvas.addEventListener('pointerup',up); canvas.addEventListener('pointercancel',up);
+canvas.addEventListener('contextmenu',e=>e.preventDefault()); canvas.addEventListener('pointerdown',down); canvas.addEventListener('pointermove',move); canvas.addEventListener('pointerup',up); canvas.addEventListener('pointercancel',e=>{ if(stroke&&e.pointerId===stroke.id) stroke=null; });
 
 // ---------- loop ----------
 function update(dt){ const p=progress(); spawnAcc+=dt;
@@ -238,15 +243,17 @@ function update(dt){ const p=progress(); spawnAcc+=dt;
   for(const f of floats) f.t+=dt; floats=floats.filter(f=>f.t<1.1);
   if(shake>0) shake=Math.max(0,shake-dt*14);
   if(ghost.on){ ghost.t+=dt; if(ghost.t>4.2) ghost.on=false; }
+  else if(ghost.want){ const L=lanterns.find(L=>!L.lit&&!L.gone&&!L.settled&&L.y<H*0.72); if(L){ ghost={on:true,t:0,x:L.x,y:L.y-H*0.06,want:false}; store.set('lanterns.seen','1'); } }
+  if(titleEl.parentNode && !titleFading && (lit>0 || elapsed>9)){ titleFading=true; titleEl.style.opacity=0; setTimeout(()=>titleEl.remove(),1700); }
   audio.tuneDrone(p);
   // ending: timed moods end once the timer is up and the last unlit lanterns are gone or lit
   if(cfg.len && elapsed>=cfg.len && !ended){ ended=true; }
   if(ended && !over && !lanterns.some(L=>!L.lit&&!L.gone)){ over=true; finish(); }
   return p; }
 function step(ts){ if(!running) return; if(resize()){} if(!lastT) lastT=ts; const dt=Math.min(0.05,(ts-lastT)/1000); lastT=ts; elapsed=(ts-t0)/1000;
-  const p=update(dt); draw(p); hudUpdate(p); requestAnimationFrame(step); }
+  const p=update(dt); if(!running) return; draw(p); hudUpdate(p); if((ts|0)%1000<20) audio.apply(); raf=requestAnimationFrame(step); }
 function hudUpdate(p){ scoreEl.textContent=score;
-  if(cfg.scoreFade){ const f=p<0.45?1:clamp(1-(p-0.45)/0.35,0,1); hud.style.opacity=(0.92*f).toFixed(2); hud.style.transform=`scale(${lerp(1,0.75,1-f)})`; moodBtn.style.opacity=(0.25+0.75*f).toFixed(2); }
+  if(cfg.scoreFade){ const f=p<0.45?1:clamp(1-(p-0.45)/0.35,0,1); hud.style.opacity=(0.92*f).toFixed(2); hud.style.transform=`scale(${lerp(1,0.75,1-f)})`; moodBtn.style.opacity=(0.6+0.4*f).toFixed(2); }
   else { hud.style.opacity=0.92; hud.style.transform='none'; moodBtn.style.opacity=1; } }
 
 // ---------- drawing ----------
@@ -268,9 +275,10 @@ function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w
 function draw(p){ const pal=palette(p); ctx.save(); if(shake>0.2) ctx.translate(rnd(-shake,shake),rnd(-shake,shake));
   const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,rgb(pal.top)); g.addColorStop(1,rgb(pal.bot)); ctx.fillStyle=g; ctx.fillRect(-8,-8,W+16,H+16);
   // stars fade as the sky warms
-  ctx.fillStyle='#fff7e0'; for(const s of stars){ s.tw+=0.016*s.sp; ctx.globalAlpha=pal.star*(0.45+0.55*Math.sin(s.tw)); ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,6.28); ctx.fill(); } ctx.globalAlpha=1;
+  const nowD=performance.now(); const ddt=Math.min(0.05,(nowD-(draw.lastT||nowD))/1000); draw.lastT=nowD;
+  ctx.fillStyle='#fff7e0'; for(const s of stars){ s.tw+=ddt*s.sp; ctx.globalAlpha=pal.star*(0.45+0.55*Math.sin(s.tw)); ctx.beginPath(); ctx.arc(s.u*W,s.v*H,s.r*(S/500),0,6.28); ctx.fill(); } ctx.globalAlpha=1;
   // a moon, only for the warm moods
-  if(cfg.warm){ const mx=W*moon.x,my=H*moon.y,mr=S*0.05; const mg=ctx.createRadialGradient(mx,my,mr*0.6,mx,my,mr*4); mg.addColorStop(0,'rgba(255,240,210,0.16)'); mg.addColorStop(1,'rgba(255,240,210,0)'); ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(mx,my,mr*4,0,6.28); ctx.fill();
+  if(cfg.warm){ const mx=W*moon.x,my=H*(moon.y+0.22*p),mr=S*0.05; /* the moon sinks as the session settles: the progress cue */ const mg=ctx.createRadialGradient(mx,my,mr*0.6,mx,my,mr*4); mg.addColorStop(0,'rgba(255,240,210,0.16)'); mg.addColorStop(1,'rgba(255,240,210,0)'); ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(mx,my,mr*4,0,6.28); ctx.fill();
     ctx.fillStyle=`rgba(255,244,220,${lerp(0.85,0.55,p)})`; ctx.beginPath(); ctx.arc(mx,my,mr,0,6.28); ctx.fill(); ctx.fillStyle=rgb(pal.top); ctx.globalAlpha=0.9; ctx.beginPath(); ctx.arc(mx+mr*0.45,my-mr*0.2,mr*0.86,0,6.28); ctx.fill(); ctx.globalAlpha=1; }
   // hills
   for(let i=0;i<hills.length;i++){ const dark=mixc(pal.bot,[0,0,0], i?0.78:0.6); ctx.fillStyle=rgb(dark); ctx.beginPath(); ctx.moveTo(-8,H+8); for(const [x,y] of hills[i]) ctx.lineTo(x*W,y*H); ctx.lineTo(W+8,H+8); ctx.closePath(); ctx.fill(); }
@@ -282,7 +290,7 @@ function draw(p){ const pal=palette(p); ctx.save(); if(shake>0.2) ctx.translate(
   for(const L of lanterns) drawLantern(L,pal,false);
   // floating score labels
   ctx.textAlign='center'; ctx.font=`600 ${Math.round(S*0.04)}px -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif`;
-  for(const f of floats){ const k=f.t/1.1; ctx.globalAlpha=1-k*k; ctx.fillStyle=`rgb(${f.c})`; ctx.shadowColor='rgba(0,0,0,0.6)'; ctx.shadowBlur=8; ctx.fillText(f.txt,f.x,f.y-k*S*0.1); } ctx.shadowBlur=0; ctx.globalAlpha=1;
+  ctx.lineWidth=Math.max(2,S*0.006); ctx.strokeStyle='rgba(10,6,20,0.55)'; ctx.lineJoin='round'; for(const f of floats){ const k=f.t/1.1; ctx.globalAlpha=1-k*k; ctx.strokeText(f.txt,f.x,f.y-k*S*0.1); ctx.fillStyle=`rgb(${f.c})`; ctx.fillText(f.txt,f.x,f.y-k*S*0.1); } ctx.globalAlpha=1;
   // a soft vignette that deepens as a warm mood settles
   if(cfg.warm){ const v=ctx.createRadialGradient(W/2,H/2,S*0.35,W/2,H/2,Math.max(W,H)*0.78); v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,`rgba(10,3,0,${0.10+0.26*p})`); ctx.fillStyle=v; ctx.fillRect(-8,-8,W+16,H+16); }
   ctx.restore(); }
@@ -290,30 +298,30 @@ function drawStroke(pal){ if(!stroke||stroke.pts.length<2) return; const now=per
   ctx.lineCap='round'; ctx.lineJoin='round'; for(let i=1;i<pts.length;i++){ const k=i/pts.length; const age=(now-pts[i].t)/380; const a=(1-age)*0.85; ctx.strokeStyle=`rgba(${pal.glow},${a})`; ctx.lineWidth=S*0.028*k+1; ctx.beginPath(); ctx.moveTo(pts[i-1].x,pts[i-1].y); ctx.lineTo(pts[i].x,pts[i].y); ctx.stroke();
     ctx.strokeStyle=`rgba(255,255,240,${a*0.7})`; ctx.lineWidth=S*0.008*k+0.5; ctx.beginPath(); ctx.moveTo(pts[i-1].x,pts[i-1].y); ctx.lineTo(pts[i].x,pts[i].y); ctx.stroke(); } }
 function drawGhost(pal){ if(!ghost.on) return; const t=ghost.t; if(t<0.6) return; const k=clamp((t-0.6)/2.2,0,1); const fade = t>3.2? clamp(1-(t-3.2)/1,0,1) : 1;
-  const x0=W*0.2,y0=H*0.62,x1=W*0.8,y1=H*0.42; const n=24; ctx.lineCap='round';
+  const x0=clamp(ghost.x-W*0.28,W*0.05,W*0.6),x1=clamp(ghost.x+W*0.28,W*0.4,W*0.95),y0=ghost.y+H*0.05,y1=ghost.y-H*0.05; const n=24; ctx.lineCap='round';
   for(let i=1;i<=Math.floor(n*k);i++){ const a=(i/(n*k))*0.6*fade; const u=i/n, v=(i-1)/n; const wob=u=>Math.sin(u*6.28)*H*0.05;
     ctx.strokeStyle=`rgba(${pal.glow},${a})`; ctx.lineWidth=S*0.02*(i/n)+1; ctx.beginPath(); ctx.moveTo(lerp(x0,x1,v),lerp(y0,y1,v)+wob(v)); ctx.lineTo(lerp(x0,x1,u),lerp(y0,y1,u)+wob(u)); ctx.stroke(); }
   const u=k; ctx.fillStyle=`rgba(255,255,240,${0.9*fade})`; ctx.beginPath(); ctx.arc(lerp(x0,x1,u),lerp(y0,y1,u)+Math.sin(u*6.28)*H*0.05,S*0.014,0,6.28); ctx.fill(); }
 
 // ---------- rounds ----------
-function setMood(m){ mode=m; cfg=MODES[m]; moodBtn.textContent=cfg.label; localStorage.setItem('lanterns.mode',m); }
-function startRound(){ lanterns=[]; sky=[]; sparks=[]; floats=[]; score=0; lit=0; missed=0; streak=0; bestStreak=0; taps=0; strokes=0; spawnAcc=9; lastT=0; ended=false; over=false; shake=0; stroke=null;
+function setMood(m){ if(m!==mode){ sky=[]; lanterns=[]; } mode=m; cfg=MODES[m]; moodBtn.textContent=cfg.label+' ▾'; }
+function startRound(){ cancelAnimationFrame(raf); cancelAnimationFrame(idleRaf); clearTimeout(finishTimer); lanterns=lanterns.filter(L=>L.settled&&!L.dead); sparks=[]; floats=[]; score=0; happy=false; lit=0; missed=0; streak=0; bestStreak=0; taps=0; strokes=0; spawnAcc=9; lastT=0; ended=false; over=false; shake=0; stroke=null;
   t0=performance.now(); elapsed=0; running=true; paused=false;
   missesEl.innerHTML=''; if(cfg.fail){ for(let i=0;i<cfg.fail;i++) missesEl.appendChild(document.createElement('i')); }
   hud.style.opacity=0.92; hud.style.transform='none'; endCard.classList.add('hidden'); picker.classList.add('hidden'); CG.banner(false);
-  if(!localStorage.getItem('lanterns.seen')){ ghost={on:true,t:0}; localStorage.setItem('lanterns.seen','1'); }
-  CG.gameplayStart(); requestAnimationFrame(step); }
-function finish(){ running=false; rounds++; CG.gameplayStop(); const newBest = score>best; if(newBest){ best=score; localStorage.setItem('lanterns.best',best); }
-  if(newBest && rounds>1 || (!cfg.fail && lit>=20)) CG.happytime();
+  if(cfg.feel) say(`${cfg.label} · ends on its own in ${Math.round(cfg.len/60)} min · tap the pill to change`, 3200);
+  CG.gameplayStart(); raf=requestAnimationFrame(step); }
+function finish(){ running=false; paused=false; stroke=null; cancelAnimationFrame(raf); rounds++; CG.gameplayStop(); const newBest = score>best; if(newBest){ best=score; store.set('lanterns.best',best); }
+  if(!happy && newBest && rounds>1){ happy=true; CG.happytime(); }
   $('endTitle').textContent=cfg.endTitle; $('endText').textContent=cfg.endText; $('stScore').textContent=score; $('stLit').textContent=lit; $('stBest').textContent=best;
   $('feelWrap').classList.toggle('hidden',!cfg.feel); $('again').textContent = cfg.feel? 'Again' : 'Play again'; $('again').classList.toggle('primary',!cfg.feel); $('again').classList.toggle('quiet',!!cfg.feel);
   hud.style.opacity=0; const show=()=>{ endCard.classList.remove('hidden'); CG.banner(!!cfg.ads); };
   // keep the lit sky drifting behind the card
-  (function idle(){ if(running) return; resize(); for(const L of lanterns){ L.ph+=0.016; if(L.settled){ L.x+=Math.sin(L.ph*0.4)*L.sway*S*0.01*0.016; } } for(const s of sparks){ s.age+=0.016; } sparks=sparks.filter(s=>s.age<s.life); draw(progress()); requestAnimationFrame(idle); })();
+  let it=performance.now(); (function idle(now){ if(running) return; const d=Math.min(0.05,((now||performance.now())-it)/1000); it=now||performance.now(); resize(); for(const L of lanterns){ L.ph+=d; if(L.settled){ L.x+=Math.sin(L.ph*0.4)*L.sway*S*0.01*d; } } for(const s of sparks){ s.age+=d; } sparks=sparks.filter(s=>s.age<s.life); draw(progress()); idleRaf=requestAnimationFrame(idle); })();
   CG.adBreak(show); }
-function record(feel){ try{ const key='lanterns.sessions'; const arr=JSON.parse(localStorage.getItem(key)||'[]'); arr.push({t:Date.now(),mode,len:Math.round(elapsed),score,lit,missed,bestStreak,strokes,feel}); localStorage.setItem(key,JSON.stringify(arr.slice(-200))); }catch(e){} }
-function pause(){ if(running&&!paused){ running=false; paused=true; CG.gameplayStop(); } }
-function resume(){ if(paused){ paused=false; lastT=0; t0=performance.now()-elapsed*1000; running=true; CG.gameplayStart(); requestAnimationFrame(step); } }
+function record(feel){ try{ const key='lanterns.sessions'; const arr=JSON.parse(store.get(key)||'[]'); arr.push({t:Date.now(),mode,len:Math.round(elapsed),score,lit,missed,bestStreak,strokes,feel}); store.set(key,JSON.stringify(arr.slice(-200))); }catch(e){} }
+function pause(){ if(running&&!paused&&!over){ running=false; paused=true; cancelAnimationFrame(raf); CG.gameplayStop(); } }
+function resume(){ if(paused&&!over){ paused=false; lastT=0; t0=performance.now()-elapsed*1000; running=true; CG.gameplayStart(); cancelAnimationFrame(raf); raf=requestAnimationFrame(step); } }
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) pause(); else if(picker.classList.contains('hidden')) resume(); });
 
 // ---------- UI wiring ----------
@@ -327,11 +335,12 @@ muteBtn.addEventListener('click',()=>audio.toggle()); muteBtn.textContent=audio.
 function say(t,ms=2200){ toast.textContent=t; toast.style.opacity=1; clearTimeout(say.h); say.h=setTimeout(()=>toast.style.opacity=0,ms); }
 
 // ---------- boot: land in gameplay, the hour picks the mood, the title fades over the first lanterns ----------
-(async function boot(){ resize(); CG.loadingStart(); await CG.init(); CG.loadingStop(); resize();
-  const saved=localStorage.getItem('lanterns.mode'); const auto=moodForHour(new Date().getHours());
-  setMood(MODES[saved]? saved : auto); if(!MODES[saved] || saved!==auto) setMood(auto); // the hour wins; the pill lets you overrule it
+(function boot(){ resize();
+  // First-ever visit lands in 'just play' — the sugar. From the next visit on, the hour picks the mood and the pill overrules it.
+  const first=!store.get('lanterns.visited'); store.set('lanterns.visited','1');
+  setMood(first? 'play' : moodForHour(new Date().getHours()));
   if(QA.mode&&MODES[QA.mode]) setMood(QA.mode);
-  startRound(); if(!QA.title) setTimeout(()=>{ titleEl.style.opacity=0; setTimeout(()=>titleEl.remove(),1700); }, QA.qa?0:1400);
+  startRound(); CG.init(); if(QA.qa&&!QA.title){ titleFading=true; titleEl.remove(); }
   if(QA.qa){ if(!QA.title) titleEl.remove(); setTimeout(()=>{ running=false; const L=window.__lanterns; if(QA.qa==='showcase') L.showcase(+QA.sec||200,+QA.n||14); else { L.sim(+QA.sec||30); L.frame(0.05); } if(QA.end){ finish(); }
     // headless capture only composites frames produced inside rAF: keep presenting the still frame
     else (function still(){ if(running) return; resize(); draw(progress()); requestAnimationFrame(still); })(); }, 300); }
